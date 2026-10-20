@@ -1,119 +1,130 @@
-# TraceLoom
+# Agent Trace Debugger
 
-[![CI](https://github.com/MadanMohan0537/traceloom/actions/workflows/ci.yml/badge.svg)](https://github.com/MadanMohan0537/traceloom/actions/workflows/ci.yml)
+[![CI](https://github.com/MadanMohan0537/agent-trace-debugger/actions/workflows/ci.yml/badge.svg)](https://github.com/MadanMohan0537/agent-trace-debugger/actions/workflows/ci.yml)
 
-TraceLoom turns multi-step agent logs into replayable timelines, failure classifications, cost-per-success rollups, and progress-aware loop alerts. It is local, deterministic, dependency-free, and designed to show why a run failed—not just that it failed.
+**Local Python library for scripted agent traces: an ordered timeline, a failure class on failed runs, cost per successful task, and a flag when actions add no milestone.**
 
-> **Project Lab traceability:** catalog project 05, originally “Agent Observability Console.” TraceLoom is the product name; this metadata prevents the renamed idea from being built twice.
+The repository is `agent-trace-debugger`. The installable package and the CLI are still called `traceloom`. The HTML page heading is `TraceLoom`.
 
-## Problem
+## Problem and who it's for
 
-Agent logs are usually a wall of prompts and tool results. Operators cannot quickly locate the broken step, distinguish expensive success from cheap failure, or catch a loop whose actions keep changing. TraceLoom stores normalized spans and applies a small, auditable failure taxonomy plus an explicit milestone model.
+Agent logs are usually a wall of prompts and tool results. Operators can't quickly find the broken step, tell an expensive success from a cheap failure, or catch a loop where every action looks different. This is for teams building agents and the AI PMs and operations leads who have to explain why a run failed and what it cost.
 
-## Implemented scope
+## Approach
 
-- Span schema for plans, model calls, tool calls, results, timings, tokens, cost, status, inputs, outputs, and milestones.
-- SQLite trace store with deterministic replacement and ordered replay.
-- Six useful failure classes: wrong tool, bad arguments, loop, timeout, refusal, and silent wrong answer, plus `unknown`.
-- Per-run timeline data and a standalone HTML console report.
-- Rollups for success rate, failure mix, token use, total cost, classification coverage, and **cost per successful task**.
-- **P1 semantic-progress watchdog:** flags action windows with no milestone changes, even when tools differ.
-- Frozen comparison against repeated-tool detection with recall and false-alert denominators.
-- Five synthetic traces covering success, semantic looping, timeout, refusal, and benign repeated search.
-
-Live OpenTelemetry ingestion, a hosted UI, auto-clustering, checkpoint recovery, authentication, and production redaction are planned—not implemented.
-
-## Quick start
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-traceloom demo --db traceloom.db --json report.json --html report.html
-open report.html
-```
-
-Run the test suite:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-No API key, network connection, model download, or paid service is required.
-
-## Architecture
+- A normalized **span schema** (`run_id`, `span_id`, `sequence`, `kind`, `name`, start, duration, tokens, `cost_usd`, `status`, optional `milestone`, `input`, `output`). The fixtures use kinds `model` and `tool`. A plan is a model span named `plan`. `TraceStore` writes spans to **SQLite**, replaces a run id on re-ingest, and reads them back ordered by `sequence`. Replay returns the recorded input and output. It does not re-run tools.
+- A small **failure taxonomy** in `traceloom/classifier.py`. Successful runs get no class (`null` in JSON). A failed run takes the first match: `infinite_loop` (semantic watchdog), `timeout`, `refusal` (span status `refused`), `bad_arguments`, `wrong_tool`, `silent_wrong_answer` (failed run whose spans are all `ok`), otherwise `unknown`.
+- **Cost per successful task** is total span cost divided by the number of successful runs. When none succeed, the JSON value is `null`.
+- A **semantic-progress watchdog** (`window=3`, `grace_actions=1` by default) flags a window of `model` and `tool` spans with no milestone. `repeated_tool_loop` flags three identical tool names in a row. Scores are fields on the JSON report. Nothing sends a notification.
 
 ```mermaid
 flowchart TD
-    A["Instrumented agent"] --> B["Normalized spans"]
+    A["Run and Span objects"] --> B["Normalized spans"]
     B --> C["SQLite trace store"]
-    C --> D["Timeline replay"]
+    C --> D["JSON timeline"]
     C --> E["Failure classifier"]
     C --> F["Progress watchdog"]
-    E --> G["Cost + failure rollups"]
+    E --> G["JSON summary"]
     F --> G
+    G --> H["Static HTML summary"]
 ```
 
-Every replay uses recorded tool inputs and outputs; it does not rerun side effects. This keeps the MVP safe and reproducible.
+## What exists today
 
-## Failure taxonomy
+The only CLI command is `traceloom demo`. It ingests the five runs built in `traceloom/fixtures.py` and writes `report.json` and `report.html`. External log import and live ingestion are not implemented.
 
-| Class | Detection signal | Important limitation |
-|---|---|---|
-| Wrong tool | Span status from instrumentation | Requires the host to validate tool choice |
-| Bad arguments | Tool validation status | Schema correctness is not semantic correctness |
-| Infinite loop | No milestones across an action window | Exploration can be useful; grace periods are task-specific |
-| Timeout | Explicit timeout status | Does not identify the underlying service cause |
-| Refusal | Explicit refusal status | Appropriate refusals should not be treated as product defects |
-| Silent wrong answer | Failed run with otherwise successful spans | Requires an external task-success label |
+Those fixtures:
 
-## P1 experiment
+- `run-001` succeeds (`Find and summarize policy`) with milestones `planned`, `source_found`, and `completed`.
+- `run-002` fails. After the plan it calls `lookup`, `reroute`, `notify`, and `replan`, and only the plan span has a milestone. The class is `infinite_loop`.
+- `run-003` fails on a tool span with status `timeout`.
+- `run-004` fails on a model span with status `refused`. The class is `refusal`.
+- `run-005` succeeds (`Research options`) after three `search` calls and still records milestone `source_found`.
 
-The frozen fixtures include an agent that calls `lookup`, `reroute`, `notify`, and `replan` without reaching a new milestone. A repeated-tool detector misses it because every action differs. The semantic watchdog catches it. A separate successful run repeats `search` three times but reaches a source milestone; the semantic watchdog does not alert, while the naive detector does.
+`traceloom demo` prints this summary. Every fixture span costs `0.0002` USD and 120 tokens. The prices are synthetic.
 
-The report records true positives, false positives, false negatives, recall, and false-alert rate for both methods. Five fixtures demonstrate mechanics; they are not evidence of production accuracy.
+| Field | Value |
+|---|---|
+| runs | 5 |
+| successes | 2 |
+| success_rate | 0.4 |
+| total_cost_usd | 0.0034 |
+| total_tokens | 2040 |
+| cost_per_success_usd | 0.0017 |
+| failure_mix | `infinite_loop` 1, `timeout` 1, `refusal` 1 |
+| classification_coverage | 1.0 |
 
-## Metrics
+`classification_coverage` is the share of failed runs whose class is not `unknown`. Failure classes are assigned only to failed runs. Both successes have `failure: null`. The HTML page shows success rate as `40%` and cost per success as `$0.0017`.
 
-Cost per run can reward systems that fail cheaply. TraceLoom instead makes cost per successful task the headline metric:
+Watchdog scores on the same five fixtures are stored at `watchdog_experiment` in `report.json`:
 
-\[
-\text{cost per success}=\frac{\sum \text{span cost across all runs}}{\text{successful tasks}}
-\]
+| Method | Counts | Recall | False-alert rate |
+|---|---|---|---|
+| semantic progress | 1 true positive, 0 false positives, 0 false negatives | 1.0 | 0.0 |
+| repeated tool | 0 true positives, 1 false positive (`run-005`), 1 false negative (`run-002`) | 0.0 | 0.25 |
 
-When there are no successes the value is `null`, not zero.
+`report.json` holds the summary, those scores, and each run's span timeline. `report.html` is a static page with the run count, success rate, cost per success, and a table of id, task, success, failure, and total latency. Span timelines and watchdog scores stay in the JSON file.
+
+`wrong_tool`, `bad_arguments`, and `silent_wrong_answer` exist as classifier branches. The fixtures and the tests cover success, `infinite_loop`, `timeout`, and `refusal`.
+
+The suite is 9 tests in `tests/test_core.py` (`python -m unittest discover -s tests -v`). [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs that command on Python 3.11, 3.12, and 3.13.
+
+## How success would be measured
+
+| Measure | Status |
+|---|---|
+| Loops caught by the semantic watchdog versus repeated-tool detection, on real agent traces | Not yet measured |
+| Share of failed runs that receive a specific class other than `unknown`, on real agent traces | Not yet measured |
+| Time for an operator to find the failing step | Not yet measured |
+| Cost per successful task on real agent traffic, tracked across releases | Not yet measured |
+
+The table in [What exists today](#what-exists-today) is the scripted demo printing its own fixtures. That output is not a measurement of real runs.
 
 ## Limitations
 
-- The fixture prices are synthetic and must not be interpreted as vendor pricing.
-- Failure classification is deterministic and only as reliable as span statuses and task-success labels.
-- Milestones must be defined by the instrumented task; missing instrumentation can create false alerts.
-- The default three-action window and one-action grace period are examples, not calibrated production thresholds.
-- SQLite fits a single-node portfolio MVP, not high-volume distributed ingestion.
-- Recorded prompts and tool results may contain secrets or personal data; this MVP has no automatic redaction or retention enforcement.
-- The HTML report is static and unauthenticated. Do not expose it to the internet with real traces.
-- Replay is inspection of recorded results, not execution; checkpoint recovery remains planned.
+- Fixture prices are synthetic and must not be read as vendor pricing.
+- Classification follows the recorded span status and the run success flag. It does not decide whether a tool choice was appropriate.
+- Milestones have to be supplied on the spans. Missing milestones make the watchdog flag the window. The default window of 3 and grace of 1 are the function defaults, not calibrated thresholds.
+- The HTML writer formats cost per success as a number, so that page expects at least one success. The JSON field is `null` when there are none.
+- Live OpenTelemetry ingestion, a hosted UI, automatic redaction, and a retention policy are not in this repo. Stored `input` and `output` can contain secrets. The HTML file has no authentication.
+- The CLI loads the in-repo fixtures only.
 
-## Repository map
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/BACKLOG.md](docs/BACKLOG.md). Rows below the shipped watchdog in the backlog are proposals.
 
-```text
-traceloom/
-  models.py       trace contracts
-  store.py        SQLite ingestion and replay
-  classifier.py   failure taxonomy
-  watchdog.py     semantic and repeated-tool detectors
-  metrics.py      cost and watchdog experiment rollups
-  fixtures.py     reproducible synthetic runs
-  report.py       JSON and HTML console output
-tests/             behavior and integration tests
-docs/              architecture and rigorous backlog
+## Quick start
+
+Requires Python 3.11+. The package declares no runtime dependencies. The demo needs no API key, model download, or paid service. A fresh `pip install -e .` can still fetch the `setuptools` build dependency.
+
+```bash
+git clone https://github.com/MadanMohan0537/agent-trace-debugger.git
+cd agent-trace-debugger
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+python -m unittest discover -s tests -v
+traceloom demo --db traceloom.db --json report.json --html report.html
 ```
 
-## Roadmap
+Open `report.html` in a browser. `traceloom.db`, `report.json`, and `report.html` are local outputs listed in `.gitignore`.
 
-See [docs/BACKLOG.md](docs/BACKLOG.md) for prioritized features with their user problem, behavior, dependencies, success test, and tradeoffs. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) describes data boundaries and production hardening.
+## Deployment
+
+Cloudflare Workers is the planned target. It is not configured in this repository, and this project is not deployed.
+
+When a Worker exists, the deploy command is:
+
+```bash
+npx wrangler deploy
+```
+
+There is no `wrangler.toml` yet, so that command has nothing to deploy. Still needed:
+
+- `wrangler.toml`
+- A Worker entry point
+- Python Workers, or a JavaScript/TypeScript port of this package
+
+The code in the repo is a local CPython package. It stores traces with the standard-library `sqlite3` module.
 
 ## License
 
-MIT
-
+MIT. See [LICENSE](LICENSE).
