@@ -3,12 +3,13 @@ import unittest
 from pathlib import Path
 
 from traceloom.classifier import classify
-from traceloom.fixtures import sample_runs
+from traceloom.fixtures import recovery_fixture, sample_runs
 from traceloom.metrics import summarize, watchdog_experiment
 from traceloom.models import Run, Span
 from traceloom.report import write_report
 from traceloom.store import TraceStore
 from traceloom.watchdog import repeated_tool_loop, semantic_progress
+from traceloom.recovery import RecoveryAttempt, compare_recovery, evaluate_attempt
 
 
 class CoreTests(unittest.TestCase):
@@ -51,6 +52,33 @@ class CoreTests(unittest.TestCase):
             j,h=Path(d)/"r.json",Path(d)/"r.html"
             report=write_report(sample_runs(),str(j),str(h))
             self.assertTrue(j.exists() and h.exists()); self.assertEqual(report["summary"]["runs"],5)
+            self.assertEqual(report["recovery_experiment"]["recommended"],"after-reservation")
             self.assertIn("TraceLoom",h.read_text())
+    def test_recovery_prefers_safe_low_cost_checkpoint(self):
+        run,attempts=recovery_fixture()
+        result=compare_recovery(run,attempts)
+        self.assertEqual(result["recommended"],"after-reservation")
+        self.assertEqual(result["decision"],"resume")
+        self.assertEqual(result["cost_savings_vs_full_restart_usd"],.007)
+    def test_recovery_surfaces_duplicate_side_effect_risk(self):
+        run,attempts=recovery_fixture()
+        result=compare_recovery(run,attempts)
+        by_name={item["name"]:item for item in result["attempts"]}
+        self.assertFalse(by_name["full-restart"]["safe_for_active_replay"])
+        self.assertIn("reserve",by_name["full-restart"]["repeated_non_idempotent_span_ids"])
+        self.assertTrue(by_name["after-reservation"]["safe_for_active_replay"])
+    def test_recovery_requires_simulated_results(self):
+        run,_=recovery_fixture()
+        unsafe=Span(run.run_id,"live",4,"tool","notify",0,1,cost_usd=.1)
+        with self.assertRaises(ValueError):
+            evaluate_attempt(run,RecoveryAttempt("bad",2,(unsafe,),True))
+    def test_recovery_requires_full_restart_comparator(self):
+        run,attempts=recovery_fixture()
+        with self.assertRaises(ValueError): compare_recovery(run,attempts[1:])
+    def test_recovery_rejects_unknown_checkpoint(self):
+        run,attempts=recovery_fixture()
+        invalid=RecoveryAttempt("invalid",99,attempts[-1].replay,True)
+        with self.assertRaises(ValueError): evaluate_attempt(run,invalid)
 
 if __name__=="__main__": unittest.main()
+
