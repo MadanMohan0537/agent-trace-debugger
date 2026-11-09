@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/MadanMohan0537/agent-trace-debugger/actions/workflows/ci.yml/badge.svg)](https://github.com/MadanMohan0537/agent-trace-debugger/actions/workflows/ci.yml)
 
-TraceLoom turns multi-step agent logs into replayable timelines, failure classifications, cost-per-success rollups, and progress-aware loop alerts. It is local, deterministic, dependency-free, and designed to show why a run failed—not just that it failed.
+TraceLoom turns multi-step agent logs into privacy-filtered, replayable timelines, failure classifications, cost-per-success rollups, and progress-aware loop alerts. It is local, deterministic, dependency-free, and designed to show why a run failed—not just that it failed.
 
 > **Project Lab traceability:** catalog project 05, originally “Agent Observability Console.” TraceLoom is the product name; this metadata prevents the renamed idea from being built twice.
 
@@ -19,10 +19,11 @@ Agent logs are usually a wall of prompts and tool results. Operators cannot quic
 - Rollups for success rate, failure mix, token use, total cost, classification coverage, and **cost per successful task**.
 - **P1 semantic-progress watchdog:** flags action windows with no milestone changes, even when tools differ.
 - **P2 recovery checkpoint experiment:** evaluates mocked resume points, recovery cost, and repeated non-idempotent side effects against a full restart.
+- **Trace privacy firewall:** applies top-level field allowlists, recursive structured secret and email redaction, deterministic TTL expiry, and retained-field accounting before SQLite writes.
 - Frozen comparison against repeated-tool detection with recall and false-alert denominators.
 - Five synthetic traces covering success, semantic looping, timeout, refusal, and benign repeated search.
 
-Live OpenTelemetry ingestion, active checkpoint execution, a hosted UI, auto-clustering, authentication, and production redaction are planned—not implemented.
+Live OpenTelemetry ingestion, active checkpoint execution, a hosted UI, auto-clustering, authentication, and production-grade data-loss prevention are planned—not implemented.
 
 ## Quick start
 
@@ -33,6 +34,16 @@ python -m pip install -e .
 traceloom demo --db traceloom.db --json report.json --html report.html
 open report.html
 ```
+
+Apply a reproducible retention window and purge against an injected clock:
+
+```bash
+traceloom demo --db traceloom.db --json report.json --html report.html \
+  --now-ms 1000000 --ttl-ms 86400000
+traceloom purge --db traceloom.db --now-ms 87400000
+```
+
+The explicit clock makes retention tests deterministic. Production adapters should supply a trusted wall clock rather than accepting caller-selected time.
 
 Run the test suite:
 
@@ -52,6 +63,8 @@ flowchart TD
     C --> E["Failure classifier"]
     C --> F["Progress watchdog"]
     C --> H["Mocked recovery experiment"]
+    B --> I["Privacy firewall"]
+    I --> C
     E --> G["Cost + failure rollups"]
     F --> G
     H --> G
@@ -63,6 +76,12 @@ Recovery attempts are stricter: every replay span must declare
 output.simulation=true. TraceLoom rejects unmarked results, requires a
 full-restart comparator, and excludes checkpoints that would repeat a
 non-idempotent tool from active-replay recommendations.
+
+## Privacy boundary
+
+`TraceStore.ingest` sanitizes each run before opening its write transaction. Unknown top-level input/output fields are dropped; permitted structures are recursively inspected for sensitive key names and for email, bearer-token, and common secret-assignment patterns. Only the sanitized copy reaches SQLite. Per-run accounting records total, retained, dropped, and redacted field counts, and the JSON/HTML report surfaces the aggregate retention rate.
+
+TTL expiry is opt-in. A run with a TTL receives an absolute expiration time, and `traceloom purge` deletes the run, its spans, and its privacy accounting in one transaction. Runs without a TTL remain until explicitly managed.
 
 ## Failure taxonomy
 
@@ -113,7 +132,10 @@ When there are no successes the value is `null`, not zero.
 - Milestones must be defined by the instrumented task; missing instrumentation can create false alerts.
 - The default three-action window and one-action grace period are examples, not calibrated production thresholds.
 - SQLite fits a single-node portfolio MVP, not high-volume distributed ingestion.
-- Recorded prompts and tool results may contain secrets or personal data; this MVP has no automatic redaction or retention enforcement.
+- Redaction is deterministic pattern matching, not a complete DLP system. Encoded, obfuscated, domain-specific, or image secrets may pass through.
+- Allowlists can remove evidence needed for diagnosis; retained-field rate measures volume, not diagnostic usefulness.
+- TTL deletion occurs only when `purge` runs; there is no background scheduler in this local MVP.
+- Existing databases created before this feature are migrated structurally, but previously stored raw rows are not retroactively sanitized.
 - The HTML report is static and unauthenticated. Do not expose it to the internet with real traces.
 - Replay is inspection of recorded results, not execution; active checkpoint recovery remains planned.
 - Recovery outcomes are supplied by mocked fixtures; they do not predict live tool behavior.
@@ -129,6 +151,7 @@ traceloom/
   classifier.py   failure taxonomy
   watchdog.py     semantic and repeated-tool detectors
   recovery.py     mocked checkpoint evaluation and restart comparison
+  privacy.py      allowlists, structured redaction, and accounting
   metrics.py      cost and watchdog experiment rollups
   fixtures.py     reproducible synthetic runs
   report.py       JSON and HTML console output

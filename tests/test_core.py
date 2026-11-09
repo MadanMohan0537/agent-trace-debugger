@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import sqlite3
 from pathlib import Path
 
 from traceloom.classifier import classify
@@ -10,6 +11,8 @@ from traceloom.report import write_report
 from traceloom.store import TraceStore
 from traceloom.watchdog import repeated_tool_loop, semantic_progress
 from traceloom.recovery import RecoveryAttempt, compare_recovery, evaluate_attempt
+from traceloom.privacy import PrivacyPolicy, REDACTED_EMAIL, REDACTED_SECRET, sanitize_run
+from traceloom.cli import main
 
 
 class CoreTests(unittest.TestCase):
@@ -42,6 +45,55 @@ class CoreTests(unittest.TestCase):
             store=TraceStore(Path(d)/"t.db"); runs=sample_runs()
             for r in runs: store.ingest(r)
             self.assertEqual(store.runs(),runs)
+    def test_privacy_firewall_redacts_seeded_secrets_before_storage(self):
+        span=Span("private","s1",0,"tool","lookup",0,1,
+            input={"query":"email alice@example.com bearer abcdefghijklmnop","arguments":{"api_key":"sk-test-secret","safe":"ok"},"raw_prompt":"drop me"},
+            output={"result":"password=hunter2","debug_dump":"drop me too"})
+        run=Run("private","Contact alice@example.com",True,(span,))
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/"t.db"; store=TraceStore(path)
+            accounting=store.ingest(run)
+            raw=path.read_bytes()
+            for secret in (b"alice@example.com",b"abcdefghijklmnop",b"sk-test-secret",b"hunter2",b"drop me"):
+                self.assertNotIn(secret,raw)
+            saved=store.runs()[0]
+            self.assertIn(REDACTED_EMAIL,saved.task)
+            self.assertEqual(saved.spans[0].input["arguments"]["api_key"],REDACTED_SECRET)
+            self.assertGreaterEqual(accounting["redacted_values"],4)
+            self.assertEqual(accounting["dropped_fields"],2)
+    def test_privacy_policy_can_narrow_allowlist(self):
+        run=Run("narrow","task",True,(Span("narrow","s",0,"tool","x",0,1,input={"query":"keep","arguments":{"safe":1}}),))
+        clean,stats=sanitize_run(run,PrivacyPolicy(input_allowlist=("query",),output_allowlist=()))
+        self.assertEqual(clean.spans[0].input,{"query":"keep"})
+        self.assertEqual(stats.dropped_fields,1)
+    def test_ttl_purge_is_deterministic_and_cascades(self):
+        with tempfile.TemporaryDirectory() as d:
+            store=TraceStore(Path(d)/"t.db")
+            store.ingest(sample_runs()[0],ingested_at_ms=1000,ttl_ms=500)
+            store.ingest(sample_runs()[1],ingested_at_ms=1000,ttl_ms=1000)
+            self.assertEqual(store.purge_expired(1499),[])
+            self.assertEqual(store.purge_expired(1500),["run-001"])
+            self.assertEqual([r.run_id for r in store.runs()],["run-002"])
+            self.assertEqual(store.privacy_summary()["runs_accounted"],1)
+    def test_invalid_ttl_rejected_without_writes(self):
+        with tempfile.TemporaryDirectory() as d:
+            store=TraceStore(Path(d)/"t.db")
+            with self.assertRaises(ValueError): store.ingest(sample_runs()[0],ttl_ms=0)
+            self.assertEqual(store.runs(),[])
+    def test_purge_cli_removes_expired_trace(self):
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/"t.db"; store=TraceStore(path)
+            store.ingest(sample_runs()[0],ingested_at_ms=10,ttl_ms=5)
+            self.assertEqual(main(["purge","--db",str(path),"--now-ms","15"]),0)
+            self.assertEqual(store.runs(),[])
+    def test_privacy_accounting_is_in_report(self):
+        with tempfile.TemporaryDirectory() as d:
+            j,h=Path(d)/"r.json",Path(d)/"r.html"
+            store=TraceStore(Path(d)/"t.db")
+            for run in sample_runs(): store.ingest(run)
+            report=write_report(store.runs(),str(j),str(h),store.privacy_summary())
+            self.assertEqual(report["privacy"]["runs_accounted"],5)
+            self.assertGreater(report["privacy"]["retained_field_rate"],0)
     def test_store_rejects_duplicate_sequence(self):
         span=Span("x","1",0,"tool","a",0,1)
         run=Run("x","task",False,(span,Span("x","2",0,"tool","b",1,1)))
