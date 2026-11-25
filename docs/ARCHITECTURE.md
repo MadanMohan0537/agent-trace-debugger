@@ -18,6 +18,7 @@ A span has a run ID, stable span ID, monotonic sequence, kind, name, start time,
 | Mocked recovery only | Measures restart decisions without executing side effects | Mock outcomes may not transfer to live tools |
 | Exclude non-idempotent repeats | Avoids recommending obviously unsafe resume points | Depends on complete tool metadata |
 | Inject retention time | Makes TTL behavior reproducible and testable | Production callers must provide a trusted clock |
+| Gate policy changes on decision preservation | Prevent minimization from silently changing classification, loop, or recovery-safety outcomes | Only frozen authored fixtures are covered |
 
 ## Privacy firewall boundary
 
@@ -26,6 +27,19 @@ The persistence path is `Run -> sanitize_run -> SQLite transaction`. Input and o
 The firewall emits per-run field counts. “Retained” includes values that were retained in redacted form, so the retention rate is an evidence-volume indicator—not a privacy guarantee or a measure of diagnostic sufficiency. The policy is code-defined and deterministic in this increment.
 
 TTL cleanup is an explicit, injected-clock operation. It removes runs, spans, and privacy accounting together. This MVP does not schedule cleanup, sanitize pre-existing rows retroactively, inspect binary payloads, or detect obfuscated secrets.
+
+## Diagnostic sufficiency boundary
+
+The canary runs classification and semantic-progress decisions on each original
+and sanitized fixture. It also compares the recovery recommendation and every
+attempt's safety eligibility because a stable recommendation can still conceal
+newly unsafe alternatives. A release is accepted only when the number of
+changed decisions is no greater than the declared integer budget; the CLI uses
+zero by default and returns exit status 2 when rejected.
+
+This checks preservation, not correctness. The 11 checks are authored contract
+fixtures, not a representative traffic sample. The privacy detector can still
+miss secrets, and a preserved but already-wrong diagnostic remains wrong.
 
 ## Safe replay boundary
 
@@ -46,6 +60,6 @@ and an append-only provenance record.
 
 ## Production hardening
 
-Add OTLP ingestion, tenant isolation, encryption, scheduled retention enforcement, authenticated query access, clock-skew handling, sampling, backpressure, versioned classifiers, and a label-feedback loop. Add policy provenance and measure classifier/watchdog decision loss after sanitization. Benchmark taxonomy precision and watchdog thresholds on representative reviewed traces before paging operators.
+Add OTLP ingestion, tenant isolation, encryption, scheduled retention enforcement, authenticated query access, clock-skew handling, sampling, backpressure, versioned classifiers, and a label-feedback loop. Add policy provenance and broaden decision-loss fixtures with representative reviewed traces. Benchmark taxonomy precision and watchdog thresholds before paging operators.
 
 

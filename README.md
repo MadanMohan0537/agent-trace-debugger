@@ -20,6 +20,7 @@ Agent logs are usually a wall of prompts and tool results. Operators cannot quic
 - **P1 semantic-progress watchdog:** flags action windows with no milestone changes, even when tools differ.
 - **P2 recovery checkpoint experiment:** evaluates mocked resume points, recovery cost, and repeated non-idempotent side effects against a full restart.
 - **Trace privacy firewall:** applies top-level field allowlists, recursive structured secret and email redaction, deterministic TTL expiry, and retained-field accounting before SQLite writes.
+- **Diagnostic-sufficiency canary:** gates privacy-policy changes on preserved failure classifications, semantic-progress alerts, and recovery-safety decisions with an explicit loss budget.
 - Frozen comparison against repeated-tool detection with recall and false-alert denominators.
 - Five synthetic traces covering success, semantic looping, timeout, refusal, and benign repeated search.
 
@@ -51,6 +52,22 @@ Run the test suite:
 python -m unittest discover -s tests -v
 ```
 
+Gate the current privacy policy against the frozen diagnostic fixtures:
+
+```bash
+traceloom policy-canary --output policy-canary.json
+```
+
+The command returns `0` when decision loss is within budget and `2` when the
+policy is rejected. For example, removing side-effect and idempotency fields is
+rejected under the default zero-loss budget:
+
+```bash
+traceloom policy-canary \
+  --input-fields query --output-fields result \
+  --output rejected-policy.json
+```
+
 No API key, network connection, model download, or paid service is required.
 
 ## Architecture
@@ -65,6 +82,7 @@ flowchart TD
     C --> H["Mocked recovery experiment"]
     B --> I["Privacy firewall"]
     I --> C
+    I --> J["Diagnostic sufficiency gate"]
     E --> G["Cost + failure rollups"]
     F --> G
     H --> G
@@ -82,6 +100,21 @@ non-idempotent tool from active-replay recommendations.
 `TraceStore.ingest` sanitizes each run before opening its write transaction. Unknown top-level input/output fields are dropped; permitted structures are recursively inspected for sensitive key names and for email, bearer-token, and common secret-assignment patterns. Only the sanitized copy reaches SQLite. Per-run accounting records total, retained, dropped, and redacted field counts, and the JSON/HTML report surfaces the aggregate retention rate.
 
 TTL expiry is opt-in. A run with a TTL receives an absolute expiration time, and `traceloom purge` deletes the run, its spans, and its privacy accounting in one transaction. Runs without a TTL remain until explicitly managed.
+
+## Diagnostic-sufficiency canary
+
+Privacy minimization can silently remove evidence needed to diagnose or safely
+recover a run. The canary compares pre- and post-sanitization decisions for:
+
+- failure classification on five labeled traces;
+- semantic-progress watchdog output on the same traces; and
+- the recovery recommendation plus every checkpoint's safety eligibility.
+
+The default policy preserves all 11 frozen decisions. A deliberately narrowed
+policy that keeps only `query` and `result` loses one decision: `after-lookup`
+is incorrectly treated as safe because its non-idempotent reservation metadata
+was removed. The zero-loss gate rejects that policy. This is a deterministic
+contract test, not proof that the fixtures cover production payloads.
 
 ## Failure taxonomy
 
@@ -136,6 +169,8 @@ When there are no successes the value is `null`, not zero.
 - Allowlists can remove evidence needed for diagnosis; retained-field rate measures volume, not diagnostic usefulness.
 - TTL deletion occurs only when `purge` runs; there is no background scheduler in this local MVP.
 - Existing databases created before this feature are migrated structurally, but previously stored raw rows are not retroactively sanitized.
+- The sufficiency canary covers 11 decisions on authored fixtures. A pass does not establish production diagnostic accuracy, and new payload-dependent diagnostics need new fixtures.
+- The configurable loss budget is a governance choice. Raising it can knowingly admit degraded diagnostics and should require review outside this local MVP.
 - The HTML report is static and unauthenticated. Do not expose it to the internet with real traces.
 - Replay is inspection of recorded results, not execution; active checkpoint recovery remains planned.
 - Recovery outcomes are supplied by mocked fixtures; they do not predict live tool behavior.
@@ -152,6 +187,7 @@ traceloom/
   watchdog.py     semantic and repeated-tool detectors
   recovery.py     mocked checkpoint evaluation and restart comparison
   privacy.py      allowlists, structured redaction, and accounting
+  sufficiency.py  pre/post-policy diagnostic decision gate
   metrics.py      cost and watchdog experiment rollups
   fixtures.py     reproducible synthetic runs
   report.py       JSON and HTML console output

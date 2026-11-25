@@ -1,6 +1,8 @@
 # Rigorous feature backlog
 
-P1 semantic progress monitoring, P2 simulated recovery, and the privacy-firewall increment are implemented. The remaining items are proposals, not completed functionality.
+P1 semantic progress monitoring, P2 simulated recovery, the privacy firewall,
+and the diagnostic-sufficiency canary are implemented. The remaining items are
+proposals, not completed functionality.
 
 | Priority | Feature | Concrete user problem | Intended behavior | Dependencies | Success test | Risks and tradeoffs |
 |---|---|---|---|---|---|---|
@@ -15,14 +17,14 @@ P1 semantic progress monitoring, P2 simulated recovery, and the privacy-firewall
 | P3 | Checkpoint provenance seal | Operators cannot prove which trace and mock set produced a recommendation | Hash the source trace, checkpoint policy, mocks, and cost model into the report | Canonical serialization, version registry | Any changed input invalidates the prior recommendation digest | Hashes prove identity, not correctness |
 | P3 | Novel failure clustering | The fixed taxonomy hides emerging modes inside `unknown` | Cluster redacted unknown traces and require reviewer naming before taxonomy changes | Embeddings or feature vectors, privacy firewall | Seeded novel family forms a stable cluster without splitting known classes | Clusters may reflect wording rather than cause |
 | P4 | SLO budget by task class | One global threshold penalizes complex tasks | Configure success, latency, and cost budgets by versioned task class | Task classifier, policy registry | Frozen tasks are judged only against their declared class | Misclassification can hide regressions |
-| P2 | Diagnostic sufficiency canary | A strict allowlist can make a trace safe but useless | Run classifier/watchdog decisions before and after sanitization and block policy releases that exceed a declared decision-loss budget | Versioned policies, labeled fixtures | Frozen failure decisions remain stable while seeded secrets are removed | Frozen fixtures may not represent production payloads |
+| P2 shipped | Diagnostic sufficiency canary | A strict allowlist can make a trace safe but useless | Compare classification, watchdog, recovery recommendation, and checkpoint safety before/after sanitization; exit nonzero above an explicit loss budget | Versioned policy, five labeled traces, recovery fixture | Default policy preserves 11/11 decisions; a narrow policy is rejected after losing recovery-safety evidence | Frozen fixtures may not represent production payloads; a permissive budget can admit degradation |
 | P3 | Retroactive privacy migration | Databases created before the firewall can retain raw payloads | Rewrite old rows through a versioned policy with dry-run counts and backup instructions | Schema versioning, migration journal | Seeded legacy secret disappears without changing run/span identity | Rewrites can destroy evidence and require careful backup policy |
 | P3 | Policy provenance seal | Operators cannot prove which privacy policy produced a report | Hash canonical policy, detector version, and accounting into report metadata | Canonical serialization, version registry | Changing an allowlist or detector invalidates the prior digest | Identity does not prove policy quality |
 
 ## Next slice
 
-Build the diagnostic-sufficiency canary next. Compare failure classification,
-watchdog output, and checkpoint recommendation before and after sanitization,
-then reject policy changes that exceed a declared decision-loss budget.
+Build a checkpoint provenance seal next. Canonically hash the source trace,
+privacy policy, recovery mocks, and cost assumptions so a recommendation is
+invalidated whenever any decision input changes.
 
 

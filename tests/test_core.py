@@ -13,9 +13,49 @@ from traceloom.watchdog import repeated_tool_loop, semantic_progress
 from traceloom.recovery import RecoveryAttempt, compare_recovery, evaluate_attempt
 from traceloom.privacy import PrivacyPolicy, REDACTED_EMAIL, REDACTED_SECRET, sanitize_run
 from traceloom.cli import main
+from traceloom.sufficiency import diagnostic_sufficiency_canary
 
 
 class CoreTests(unittest.TestCase):
+    def test_default_policy_preserves_all_diagnostic_decisions(self):
+        recovery_run, attempts=recovery_fixture()
+        result=diagnostic_sufficiency_canary(sample_runs(),recovery_run,attempts)
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["decision_checks"],11)
+        self.assertEqual(result["decision_losses"],0)
+
+    def test_narrow_policy_fails_closed_when_recovery_safety_is_lost(self):
+        recovery_run, attempts=recovery_fixture()
+        narrow=PrivacyPolicy(input_allowlist=("query",),output_allowlist=("result",))
+        result=diagnostic_sufficiency_canary(
+            sample_runs(),recovery_run,attempts,narrow
+        )
+        self.assertFalse(result["accepted"])
+        self.assertEqual(result["decision_losses"],1)
+        self.assertEqual(result["losses"][0]["decision"],"recovery_safety")
+        self.assertFalse(result["losses"][0]["before"]["attempt_safety"]["after-lookup"])
+        self.assertTrue(result["losses"][0]["after"]["attempt_safety"]["after-lookup"])
+
+    def test_policy_canary_budget_is_explicit(self):
+        recovery_run, attempts=recovery_fixture()
+        narrow=PrivacyPolicy(input_allowlist=("query",),output_allowlist=("result",))
+        result=diagnostic_sufficiency_canary(
+            sample_runs(),recovery_run,attempts,narrow,max_decision_losses=1
+        )
+        self.assertTrue(result["accepted"])
+        with self.assertRaises(ValueError):
+            diagnostic_sufficiency_canary(sample_runs(),recovery_run,attempts,max_decision_losses=-1)
+
+    def test_policy_canary_cli_returns_gate_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            accepted=Path(d)/"accepted.json"; rejected=Path(d)/"rejected.json"
+            self.assertEqual(main(["policy-canary","--output",str(accepted)]),0)
+            self.assertEqual(main([
+                "policy-canary","--input-fields","query","--output-fields","result",
+                "--output",str(rejected),
+            ]),2)
+            self.assertTrue(accepted.exists() and rejected.exists())
+
     def test_fixture_classification(self):
         labels={r.run_id:classify(r) for r in sample_runs()}
         self.assertEqual(labels["run-002"],"infinite_loop")
@@ -105,6 +145,7 @@ class CoreTests(unittest.TestCase):
             report=write_report(sample_runs(),str(j),str(h))
             self.assertTrue(j.exists() and h.exists()); self.assertEqual(report["summary"]["runs"],5)
             self.assertEqual(report["recovery_experiment"]["recommended"],"after-reservation")
+            self.assertTrue(report["diagnostic_sufficiency"]["accepted"])
             self.assertIn("TraceLoom",h.read_text())
     def test_recovery_prefers_safe_low_cost_checkpoint(self):
         run,attempts=recovery_fixture()

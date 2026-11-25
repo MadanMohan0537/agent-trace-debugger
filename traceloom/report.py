@@ -7,6 +7,7 @@ from .metrics import summarize, watchdog_experiment
 from .models import Run
 from .fixtures import recovery_fixture
 from .recovery import compare_recovery
+from .sufficiency import diagnostic_sufficiency_canary
 
 
 def write_report(runs:list[Run],json_path:str,html_path:str,privacy:dict|None=None)->dict:
@@ -14,6 +15,9 @@ def write_report(runs:list[Run],json_path:str,html_path:str,privacy:dict|None=No
     report={"summary":summarize(runs),"watchdog_experiment":watchdog_experiment(runs),
       "recovery_experiment":compare_recovery(recovery_run,recovery_attempts),"privacy":privacy or {},"runs":[{
       "run_id":r.run_id,"task":r.task,"success":r.success,"failure":classify(r),"timeline":[s.to_dict() for s in r.spans]} for r in runs]}
+    report["diagnostic_sufficiency"] = diagnostic_sufficiency_canary(
+        runs, recovery_run, recovery_attempts
+    )
     Path(json_path).write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
     rows="".join(f"<tr><td>{html.escape(r.run_id)}</td><td>{html.escape(r.task)}</td><td>{'yes' if r.success else 'no'}</td><td>{classify(r) or '—'}</td><td>{sum(s.duration_ms for s in r.spans)}</td></tr>" for r in runs)
     privacy_metric = "" if not privacy else f"<div class='metric'>Fields retained <b>{privacy['retained_field_rate']:.0%}</b></div><div class='metric'>Values redacted <b>{privacy['redacted_values']}</b></div>"

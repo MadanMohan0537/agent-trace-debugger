@@ -18,6 +18,8 @@ jobs:
       - run: |
           traceloom demo --db traceloom.db --json report.json --html report.html --now-ms 1000 --ttl-ms 500
           python -c "import json; r=json.load(open('report.json')); assert r['recovery_experiment']['recommended'] == 'after-reservation'; assert r['recovery_experiment']['simulation_only']; assert r['privacy']['runs_accounted'] == 5; assert r['privacy']['retained_field_rate'] > 0"
+          traceloom policy-canary --output policy-canary.json
+          python -c "import json; c=json.load(open('policy-canary.json')); assert c['accepted']; assert c['decision_checks'] == 11; assert c['decision_losses'] == 0"
           traceloom purge --db traceloom.db --now-ms 1500 > purge.json
           python -c "import json,sqlite3; p=json.load(open('purge.json')); assert p['deleted'] == 5; db=sqlite3.connect('traceloom.db'); assert db.execute('select count(*) from spans').fetchone()[0] == 0; assert db.execute('select count(*) from privacy_events').fetchone()[0] == 0"
 
